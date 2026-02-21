@@ -1,7 +1,7 @@
 import os
 import json
 from argparse import ArgumentParser
-from typing import List
+from typing import List, Optional
 
 import torch
 import torch.distributed as dist
@@ -9,6 +9,10 @@ from transformers import AutoTokenizer
 from safetensors.torch import load_model
 
 from model import Transformer, ModelArgs
+try:
+    import dsa_trace
+except Exception:
+    dsa_trace = None
 
 
 def sample(logits, temperature: float = 1.0):
@@ -33,7 +37,9 @@ def generate(
     prompt_tokens: List[List[int]],
     max_new_tokens: int,
     eos_id: int,
-    temperature: float = 1.0
+    temperature: float = 1.0,
+    trace_request_id: Optional[str] = None,
+    trace_dataset: str = "",
 ) -> List[List[int]]:
     """
     Generates new tokens based on the given prompt tokens using the specified model.
@@ -57,7 +63,23 @@ def generate(
     prev_pos = 0
     finished = torch.tensor([False] * len(prompt_tokens), device="cuda")
     prompt_mask = tokens != -1
+    if trace_request_id is not None and len(prompt_tokens) != 1:
+        raise ValueError("Tracing currently supports batch_size == 1 only.")
+
+    prompt_len0 = int(prompt_lens[0]) if prompt_lens else 0
     for cur_pos in range(min(prompt_lens), total_len):
+        if trace_request_id is not None and dsa_trace is not None and dsa_trace.is_enabled():
+            try:
+                dsa_trace.set_context(
+                    dsa_trace.TraceContext(
+                        request_id=trace_request_id,
+                        step_idx=int(cur_pos - prompt_len0),
+                        seq_len_current=int(cur_pos),
+                        dataset=trace_dataset,
+                    )
+                )
+            except Exception:
+                pass
         logits = model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
         if temperature > 0:
             next_token = sample(logits, temperature)
@@ -85,6 +107,11 @@ def main(
     interactive: bool = True,
     max_new_tokens: int = 100,
     temperature: float = 1.0,
+    trace_out: str = "",
+    trace_scores: bool = False,
+    trace_block_size: int = 128,
+    trace_flush_every: int = 1,
+    trace_rank0_only: bool = True,
 ) -> None:
     """
     Main function to load the model and perform interactive or batch text generation.
@@ -119,8 +146,26 @@ def main(
     load_model(model, os.path.join(ckpt_path, f"model{rank}-mp{world_size}.safetensors"))
     print("I'm DeepSeek 👋")
 
+    if trace_out and dsa_trace is not None:
+        enable_this_rank = (rank == 0) if trace_rank0_only else True
+        if enable_this_rank:
+            out_path = trace_out
+            if world_size > 1 and not trace_rank0_only:
+                out_path = f"{trace_out}.rank{rank}.jsonl"
+            dsa_trace.enable(
+                dsa_trace.TraceConfig(
+                    out_path=out_path,
+                    flush_every=int(trace_flush_every),
+                    decode_only=True,
+                    include_scores=bool(trace_scores),
+                    include_block_stats=True,
+                    block_size=int(trace_block_size),
+                )
+            )
+
     if interactive:
         messages = []
+        request_counter = 0
         while True:
             if world_size == 1:
                 prompt = input(">>> ")
@@ -139,7 +184,17 @@ def main(
                 continue
             messages.append({"role": "user", "content": prompt})
             prompt_tokens = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
-            completion_tokens = generate(model, [prompt_tokens], max_new_tokens, tokenizer.eos_token_id, temperature)
+            request_id = f"interactive_{request_counter}"
+            request_counter += 1
+            completion_tokens = generate(
+                model,
+                [prompt_tokens],
+                max_new_tokens,
+                tokenizer.eos_token_id,
+                temperature,
+                trace_request_id=(request_id if trace_out else None),
+                trace_dataset="interactive",
+            )
             completion = tokenizer.decode(completion_tokens[0], skip_special_tokens=True)
             print(completion)
             messages.append({"role": "assistant", "content": completion})
@@ -157,6 +212,11 @@ def main(
 
     if world_size > 1:
         dist.destroy_process_group()
+    if dsa_trace is not None:
+        try:
+            dsa_trace.disable()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
@@ -181,6 +241,23 @@ if __name__ == "__main__":
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument("--max-new-tokens", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=0.6)
+    parser.add_argument("--trace-out", type=str, default="")
+    parser.add_argument("--trace-scores", action="store_true")
+    parser.add_argument("--trace-block-size", type=int, default=128)
+    parser.add_argument("--trace-flush-every", type=int, default=1)
+    parser.add_argument("--trace-all-ranks", action="store_true")
     args = parser.parse_args()
     assert args.input_file or args.interactive, "Either input-file or interactive mode must be specified"
-    main(args.ckpt_path, args.config, args.input_file, args.interactive, args.max_new_tokens, args.temperature)
+    main(
+        args.ckpt_path,
+        args.config,
+        args.input_file,
+        args.interactive,
+        args.max_new_tokens,
+        args.temperature,
+        trace_out=args.trace_out,
+        trace_scores=args.trace_scores,
+        trace_block_size=args.trace_block_size,
+        trace_flush_every=args.trace_flush_every,
+        trace_rank0_only=(not args.trace_all_ranks),
+    )

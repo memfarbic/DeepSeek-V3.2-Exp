@@ -8,6 +8,10 @@ import torch.nn.functional as F
 import torch.distributed as dist
 
 from kernel import act_quant, fp8_gemm, fp8_index
+try:
+    import dsa_trace
+except Exception:
+    dsa_trace = None
 
 
 world_size = 1
@@ -490,7 +494,18 @@ class Indexer(torch.nn.Module):
         index_score = fp8_index(q_fp8.contiguous(), weights.contiguous(), k, k_s)
         if mask is not None:
             index_score += mask
-        topk_indices = index_score.topk(min(self.index_topk, end_pos), dim=-1)[1]
+        topk_scores, topk_indices = index_score.topk(min(self.index_topk, end_pos), dim=-1)
+        if dsa_trace is not None:
+            try:
+                dsa_trace.trace_indexer_topk(
+                    topk_indices,
+                    topk_scores,
+                    end_pos=end_pos,
+                    seqlen=seqlen,
+                    mask_is_none=(mask is None),
+                )
+            except Exception:
+                pass
         if world_size > 1:
             topk_indices_ = topk_indices.clone()
             dist.broadcast(topk_indices_, src=0)
