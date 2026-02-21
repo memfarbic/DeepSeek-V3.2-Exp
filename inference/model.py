@@ -477,13 +477,26 @@ class Indexer(torch.nn.Module):
         self.k_scale_cache[:bsz, start_pos:end_pos] = k_scale
         weights = self.weights_proj(x.float()) * self.n_heads ** -0.5
         weights = weights.unsqueeze(-1) * q_scale * self.softmax_scale
-        index_score = fp8_index(q_fp8.contiguous(), weights, self.k_cache[:bsz, :end_pos].contiguous(), self.k_scale_cache[:bsz, :end_pos].contiguous())
+        weights = weights.squeeze(-1)
+
+        k = self.k_cache[:bsz, :end_pos]
+        k_s = self.k_scale_cache[:bsz, :end_pos].squeeze(-1)
+
+        k = k.reshape(bsz * end_pos, self.head_dim).contiguous().reshape(
+            bsz, end_pos, self.head_dim
+        )
+        k_s = k_s.reshape(bsz * end_pos).contiguous().reshape(bsz, end_pos)
+
+        index_score = fp8_index(q_fp8.contiguous(), weights.contiguous(), k, k_s)
         if mask is not None:
             index_score += mask
         topk_indices = index_score.topk(min(self.index_topk, end_pos), dim=-1)[1]
-        topk_indices_ = topk_indices.clone()
-        dist.broadcast(topk_indices_, src=0)
-        assert torch.all(topk_indices == topk_indices_), f"{topk_indices=} {topk_indices_=}"
+        if world_size > 1:
+            topk_indices_ = topk_indices.clone()
+            dist.broadcast(topk_indices_, src=0)
+            assert torch.all(
+                topk_indices == topk_indices_
+            ), f"{topk_indices=} {topk_indices_=}"
         return topk_indices
 
 
