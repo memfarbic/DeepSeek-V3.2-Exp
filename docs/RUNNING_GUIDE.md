@@ -391,9 +391,11 @@ cat artifacts/summary/ruler_style.json
   "dataset": "ruler_style",
   "request_id": "ruler_style_0",
   "seq_idx": 0,
+  "layer_id": 0,
   "step_idx": 3,
   "seq_len_current": 5003,
   "query_pos": 5003,
+  "is_decode": true,
   "topk": 2048,
   "selected_token_pos": [0, 42, 107, 256, ...],
   "stats": {
@@ -433,9 +435,11 @@ cat artifacts/summary/ruler_style.json
 | `dataset` | 数据集标签 |
 | `request_id` | 请求唯一 ID |
 | `seq_idx` | batch 内序列索引（通常为 0） |
+| `layer_id` | Transformer layer 编号（0-based）；**每层都会产生一条 top-k 事件** |
 | `step_idx` | decode step 编号（第一个 decode step 为 0，prefill step 为负数） |
 | `seq_len_current` | 当前已有序列长度（= prompt_len + step_idx，在 decode 阶段） |
 | `query_pos` | 当前 query token 的绝对位置（= end_pos - 1） |
+| `is_decode` | 是否为 decode 路径（`seqlen==1 && mask is None`） |
 | `topk` | 实际选出的 top-k 数量（min(2048, seq_len_current)） |
 | `selected_token_pos` | top-2048 选中的历史 token **绝对位置**列表 |
 | `stats.unique_token_pos_count` | 去重后位置数（通常 = topk，但理论上可 < topk） |

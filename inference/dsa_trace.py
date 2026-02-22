@@ -104,6 +104,7 @@ def trace_indexer_topk(
     end_pos: int,
     seqlen: int,
     mask_is_none: bool,
+    layer_id: Optional[int] = None,
 ) -> None:
     if not is_enabled():
         return
@@ -144,9 +145,11 @@ def trace_indexer_topk(
             "dataset": ctx.dataset,
             "request_id": request_ids[seq_idx],
             "seq_idx": int(seq_idx),
+            "layer_id": (int(layer_id) if layer_id is not None else None),
             "step_idx": int(ctx.step_idx),
             "seq_len_current": int(ctx.seq_len_current),
             "query_pos": int(query_pos),
+            "is_decode": bool(seqlen == 1 and mask_is_none),
             "topk": int(k),
             "selected_token_pos": selected_pos,
             "stats": {

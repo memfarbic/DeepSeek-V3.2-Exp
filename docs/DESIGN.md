@@ -94,6 +94,7 @@ return topk_indices
 1. `topk_indices` 的 shape 为 `[bsz, seqlen, topk]`，其中 `topk = min(index_topk, end_pos)`，`index_topk` 在 config 中为 2048。
 2. 在 decode 路径（`seqlen == 1, mask is None`），`topk_indices[:, 0, :]` 就是长度为 2048 的绝对位置索引，范围 `[0, end_pos - 1]`。
 3. 在 prefill 路径（`seqlen > 1, mask is not None`），每个 query position 都会产出一组 top-2048，数据量为 `bsz * seqlen * 2048`——**默认不记录**。
+4. **每个 Transformer layer 都有独立的 `MLA.indexer`（即独立的 `Indexer` 实例）**，因此在一次 `model.forward()` 调用中，`Indexer.forward()` 会被调用约 `n_layers` 次。为了让日志可区分不同 layer，本项目在事件中记录 `layer_id`。
 
 **改动内容**：
 
@@ -114,6 +115,7 @@ if dsa_trace is not None:
         dsa_trace.trace_indexer_topk(
             topk_indices, topk_scores,
             end_pos=end_pos, seqlen=seqlen, mask_is_none=(mask is None),
+            layer_id=self.layer_id,
         )
     except Exception:
         pass

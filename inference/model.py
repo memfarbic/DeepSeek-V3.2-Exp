@@ -437,8 +437,9 @@ def rotate_activation(x: torch.Tensor) -> torch.Tensor:
 
 
 class Indexer(torch.nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelArgs, *, layer_id: int):
         super().__init__()
+        self.layer_id = int(layer_id)
         self.dim: int = args.dim
         self.n_heads: int = args.index_n_heads
         self.n_local_heads = args.index_n_heads // world_size
@@ -503,6 +504,7 @@ class Indexer(torch.nn.Module):
                     end_pos=end_pos,
                     seqlen=seqlen,
                     mask_is_none=(mask is None),
+                    layer_id=self.layer_id,
                 )
             except Exception:
                 pass
@@ -539,8 +541,9 @@ class MLA(nn.Module):
         v_head_dim (int): Dimensionality of value projections.
         softmax_scale (float): Scaling factor for softmax in attention computation.
     """
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelArgs, *, layer_id: int):
         super().__init__()
+        self.layer_id = int(layer_id)
         self.dim = args.dim
         self.n_heads = args.n_heads
         self.n_local_heads = args.n_heads // world_size
@@ -564,7 +567,7 @@ class MLA(nn.Module):
             mscale = 0.1 * args.mscale * math.log(args.rope_factor) + 1.0
             self.softmax_scale = self.softmax_scale * mscale * mscale
 
-        self.indexer = Indexer(args)
+        self.indexer = Indexer(args, layer_id=self.layer_id)
 
         self.register_buffer("kv_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.kv_lora_rank), persistent=False)
         self.register_buffer("pe_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.qk_rope_head_dim), persistent=False)
@@ -851,7 +854,7 @@ class Block(nn.Module):
             args (ModelArgs): Model arguments containing block parameters.
         """
         super().__init__()
-        self.attn = MLA(args)
+        self.attn = MLA(args, layer_id=layer_id)
         self.ffn = MLP(args.dim, args.inter_dim) if layer_id < args.n_dense_layers else MoE(args)
         self.attn_norm = RMSNorm(args.dim)
         self.ffn_norm = RMSNorm(args.dim)
